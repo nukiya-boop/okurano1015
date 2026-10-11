@@ -8,9 +8,10 @@ import math
 import os
 import subprocess
 import sys
+import unicodedata
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "images", "src")
@@ -103,12 +104,20 @@ class VerticalCopy:
         self.line_x = int(right + size * 0.85)
         self.line_top = top + 6
         self.line_len = int(max(len(c) for c in columns) * size * step * 0.55)
+        # 縦書きの背後に敷く柔らかい暗がり (明るい写真でも読めるように)
+        x0 = int(right - (len(columns) - 1) * size * col_gap - size * 1.1)
+        x1 = int(right + size * 1.1)
+        y1 = int(top + max(len(c) for c in columns) * size * step + size * 0.4)
+        bd = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        ImageDraw.Draw(bd).rounded_rectangle([x0, top - size * 0.6, x1, y1], radius=size, fill=(10, 6, 2, 120))
+        self.backdrop = bd.filter(ImageFilter.GaussianBlur(size * 0.9))
 
     def draw(self, frame, t, t_in, t_out, stagger=0.065, fade=0.55):
         """t: シーン内時間, t_in: 表示開始, t_out: 消え始め"""
         out_a = 1 - smooth((t - t_out) / 0.35)
         if out_a <= 0 or t < t_in:
             return
+        paste_alpha(frame, self.backdrop, (0, 0), smooth((t - t_in + 0.3) / 0.8) * out_a)
         # 金のライン
         la = smooth((t - t_in) / 0.9) * out_a
         if la > 0:
@@ -202,10 +211,21 @@ def vignette():
     return VIGNETTE
 
 
+def find_image(fname):
+    """images/src/ → images/ の順に探す (Mac 由来の NFD ファイル名にも対応)"""
+    want = unicodedata.normalize("NFC", fname)
+    for d in (SRC, os.path.join(ROOT, "images")):
+        for f in os.listdir(d):
+            if unicodedata.normalize("NFC", f) == want:
+                return os.path.join(d, f)
+    raise FileNotFoundError(fname)
+
+
 class Scene:
     def __init__(self, fname, start, end, fx=(0.5, 0.5), fy=0.5, zoom=(1.0, 1.07),
                  copy=None, caption=None, darken=0.0):
-        im = Image.open(os.path.join(SRC, fname)).convert("RGB")
+        im = Image.open(find_image(fname))
+        im = ImageOps.exif_transpose(im).convert("RGB")
         # 縦画面を覆う高さにリサイズ (最大ズーム分の余裕込み)
         scale = H * 1.12 / im.height
         if im.width * scale < W * 1.3:
@@ -231,7 +251,8 @@ class Scene:
         f = max(W / iw, H / ih) * z  # 出力1pxあたりの画像倍率
         cw, ch = W / f, H / f
         cx = clamp(fx * iw, cw / 2, iw - cw / 2)
-        cy = clamp(self.fy * ih, ch / 2, ih - ch / 2)
+        fy = self.fy if isinstance(self.fy, (int, float)) else self.fy[0] + (self.fy[1] - self.fy[0]) * smooth(p)
+        cy = clamp(fy * ih, ch / 2, ih - ch / 2)
         sx, sy = cw / W, ch / H
         return self.img.transform((W, H), Image.AFFINE,
                                   (sx, 0, cx - cw / 2, 0, sy, cy - ch / 2), resample=Image.BILINEAR)
@@ -463,25 +484,25 @@ def build(theme):
     else:  # settai: 間違いのない接待・大事な会食に
         S = [
             opening,
-            Scene("concept-thumb2-min.jpg", 3.3, 7.3, fx=(0.40, 0.50), fy=0.5, zoom=(1.0, 1.1),
-                  copy=V(["大切なお客様を、", "心を尽くして"]),
-                  caption=C("HOSPITALITY", ["ご接待 ・ ご会食の席に"])),
-            Scene("scene-gallery4-min.jpg", 6.6, 10.6, fx=(0.40, 0.52), zoom=(1.06, 1.0),
+            Scene("イメージ_お食事シーン0103.jpg", 3.3, 7.3, fx=(0.74, 0.68), fy=0.45, zoom=(1.0, 1.06),
+                  copy=V(["大切なお客様との、", "かけがえのない席に"], right=330),
+                  caption=C("FOR BUSINESS", ["ご接待 ・ ご会食 ・ 商談に"])),
+            Scene("寂-jaku-7C1A1612.jpg", 6.6, 10.6, fx=(0.5, 0.5), fy=(0.62, 0.50), zoom=(1.0, 1.06),
                   copy=V(["人目を気にせず、", "落ち着いた個室で"]),
-                  caption=C("PRIVATE ROOM", ["個室「清」「啓」「和」　2〜6名様"])),
+                  caption=C("PRIVATE ROOM", ["個室「寂」　2〜4名様"])),
             Scene("concept-thumb1.jpg", 9.9, 13.9, fx=(0.56, 0.64), fy=0.55, zoom=(1.05, 1.0),
                   copy=V(["旬を見極める、", "職人の技"]),
                   caption=C("CRAFTSMANSHIP", ["茶の湯の心を受け継ぐ懐石"])),
             Scene("intro-slide2-min.jpg", 13.2, 17.2, fx=(0.56, 0.42), fy=0.55, zoom=(1.08, 1.0),
                   copy=V(["話題の尽きない、", "季節のひと皿"]),
                   caption=C("KAISEKI", ["月替わりの懐石コース"])),
-            Scene("scene-thumb1-min.jpg", 16.5, 20.5, fx=(0.48, 0.60), zoom=(1.0, 1.07),
-                  copy=V(["大人数の会食も、", "格式ある席で"]),
-                  caption=C("PRIVATE ROOM", ["個室「玄」　6〜8名様"])),
-            Scene("scene-gallery6-min.jpg", 19.8, 23.8, fx=(0.35, 0.50), zoom=(1.0, 1.06),
+            Scene("清-sei-7C1A1621.jpg", 16.5, 20.5, fx=(0.5, 0.5), fy=(0.45, 0.58), zoom=(1.07, 1.0),
+                  copy=V(["格式ある空間で、", "大切なお客様を"]),
+                  caption=C("PRIVATE ROOM", ["個室「清」　2〜6名様"])),
+            Scene("イメージ_ミシュラン0007.jpg", 19.8, 23.8, fx=(0.47, 0.56), fy=0.5, zoom=(1.0, 1.06),
                   copy=V(["間違いのない、", "おもてなしを"]),
                   caption=C("MICHELIN GUIDE", ["ミシュランガイド", "2024–2026 掲載"])),
-            EndingScene("scene-gallery3-min.jpg", 23.1, 30.0, fx=(0.38, 0.50), zoom=(1.0, 1.1),
+            EndingScene("寂-jaku-7C1A1614.jpg", 23.1, 30.0, fx=(0.42, 0.52), zoom=(1.0, 1.1),
                         copy=V(["大事な会食は、", "大嵓埜で"]),
                         lead=("ご接待 ・ ご会食 ・ 商談の席に", "個室五室 ・ カウンター八席")),
         ]
